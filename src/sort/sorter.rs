@@ -82,9 +82,19 @@ impl Sorter {
         let mut bind_groups = Vec::with_capacity(16);
         for i in 0..16 {
             let (values_src, values_dst, keys_src, keys_dst) = if i % 2 == 0 {
-                (&buf_values, &buf_values_scratch, &buf_keys, &buf_keys_scratch)
+                (
+                    &buf_values,
+                    &buf_values_scratch,
+                    &buf_keys,
+                    &buf_keys_scratch,
+                )
             } else {
-                (&buf_values_scratch, &buf_values, &buf_keys_scratch, &buf_keys)
+                (
+                    &buf_values_scratch,
+                    &buf_values,
+                    &buf_keys_scratch,
+                    &buf_keys,
+                )
             };
 
             // Reduce: same layout as before. The scatter layout adds binding 6
@@ -263,7 +273,11 @@ impl Sorter {
     ) -> (Vec<u32>, Vec<u32>) {
         let n = values.len() as u32;
         assert!(n <= self.num_elements);
-        assert_eq!(values.len(), keys.len(), "values and keys must have the same length");
+        assert_eq!(
+            values.len(),
+            keys.len(),
+            "values and keys must have the same length"
+        );
 
         queue.write_buffer(&self.buf_values, 0, bytemuck::cast_slice(values));
         queue.write_buffer(&self.buf_keys, 0, bytemuck::cast_slice(keys));
