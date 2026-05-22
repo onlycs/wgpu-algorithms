@@ -1,3 +1,3 @@
-pub mod buffers;
-pub mod math;
-pub mod shader;
+pub(crate) mod buffers;
+pub(crate) mod math;
+pub(crate) mod shader;

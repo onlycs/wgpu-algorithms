@@ -1,4 +1,4 @@
-use crate::{common, context::Context};
+use crate::common;
 
 pub struct SortPipeline {
     pub bind_group_layout: wgpu::BindGroupLayout,
@@ -9,20 +9,21 @@ pub struct SortPipeline {
 }
 
 impl SortPipeline {
-    pub fn new(ctx: &Context) -> Self {
-        let bind_group_layout =
-            ctx.device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("Fused Sort Layout"),
-                    entries: &[
-                        common::buffers::bind_entry(0, true, false),  // Input
-                        common::buffers::bind_entry(1, false, false), // Hist
-                        common::buffers::bind_entry(2, false, false), // Output
-                        common::buffers::bind_entry(3, false, true),  // Uniforms
-                    ],
-                });
+    pub fn new(device: &wgpu::Device) -> Self {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sort/sorter/bindgroup_layout"),
+            entries: &[
+                common::buffers::bind_entry(0, true, false), // values input
+                common::buffers::bind_entry(1, false, false), // histograms
+                common::buffers::bind_entry(2, false, false), // values output
+                common::buffers::bind_entry(3, false, true), // uniforms
+                common::buffers::bind_entry(4, true, false), // keys input
+                common::buffers::bind_entry(5, false, false), // keys output
+                common::buffers::bind_entry(6, true, false), // scan_aux (read-only storage)
+            ],
+        });
 
-        let limits = ctx.device.limits();
+        let limits = device.limits();
         let max_shared_mem = limits.max_compute_workgroup_storage_size;
 
         let (vt, block_size) = if max_shared_mem >= 32768 {
@@ -34,19 +35,19 @@ impl SortPipeline {
         let config = common::shader::ShaderConfig { vt, block_size };
 
         common::shader::create_compute_pipeline(
-            &ctx.device,
+            &device,
             &bind_group_layout,
             include_str!("sort.wgsl"),
-            &format!("Reduce VT{}", vt),
+            &format!("sort/sorter:vt{vt}/pipeline:reduce"),
             "main_reduce",
             Some(&config),
         );
 
         common::shader::create_compute_pipeline(
-            &ctx.device,
+            &device,
             &bind_group_layout,
             include_str!("sort.wgsl"),
-            &format!("Scatter VT{}", vt),
+            &format!("sort/sorter:vt{vt}/pipeline:scatter"),
             "main_scatter",
             Some(&config),
         );
@@ -56,42 +57,34 @@ impl SortPipeline {
             .replace("{{VT}}", &vt.to_string())
             .replace("{{BLOCK_SIZE}}", &block_size.to_string());
 
-        let shader_module = ctx
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("Fused Sort Shader"),
-                source: wgpu::ShaderSource::Wgsl(final_source.into()),
-            });
+        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(&format!("sort/sorter/shader:final")),
+            source: wgpu::ShaderSource::Wgsl(final_source.into()),
+        });
 
-        let pipeline_layout = ctx
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Fused Pipeline Layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                immediate_size: 0,
-            });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sort/sorter/pipeline_layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
 
-        let reduce_pipeline =
-            ctx.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Reduce Pipeline"),
-                    layout: Some(&pipeline_layout),
-                    module: &shader_module,
-                    entry_point: Some("main_reduce"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                });
+        let reduce_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("sort/sorter/pipeline:reduce"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("main_reduce"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
 
-        let scatter_pipeline =
-            ctx.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Scatter Pipeline"),
-                    layout: Some(&pipeline_layout),
-                    module: &shader_module,
-                    entry_point: Some("main_scatter"),
-                    compilation_options: Default::default(),
-                    cache: None,
-                });
+        let scatter_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("sort/sorter/pipeline:scatter"),
+            layout: Some(&pipeline_layout),
+            module: &shader_module,
+            entry_point: Some("main_scatter"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
 
         Self {
             bind_group_layout,

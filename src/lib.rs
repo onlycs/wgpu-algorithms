@@ -1,9 +1,8 @@
 mod common;
+mod scan;
 
-pub mod context;
-pub mod scan;
+#[cfg(test)]
+pub(crate) mod context;
+
 pub mod sort;
-
-pub use context::Context;
-pub use scan::Scanner;
 pub use sort::Sorter;

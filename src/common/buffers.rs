@@ -1,21 +1,13 @@
 use futures::channel::oneshot;
-use wgpu::util::DeviceExt;
-
 // --- Allocation ---
 
-pub fn create_storage_buffer<T: bytemuck::Pod>(device: &wgpu::Device, data: &[T]) -> wgpu::Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Storage Buffer"),
-        contents: bytemuck::cast_slice(data),
-        usage: wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_SRC
-            | wgpu::BufferUsages::COPY_DST,
-    })
-}
-
-pub fn create_empty_storage_buffer(device: &wgpu::Device, size_bytes: u64) -> wgpu::Buffer {
+pub fn create_empty_storage_buffer(
+    device: &wgpu::Device,
+    label: impl AsRef<str>,
+    size_bytes: u64,
+) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Empty Storage"),
+        label: Some(label.as_ref()),
         size: size_bytes,
         usage: wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_SRC

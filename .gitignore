@@ -13,3 +13,5 @@ settings.json
 
 # Cargo
 Cargo.lock
+
+.direnv

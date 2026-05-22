@@ -7,27 +7,36 @@ mod tests {
     #[tokio::test]
     async fn test_scan() {
         let ctx = Context::init().await.unwrap();
-        let mut scanner = Scanner::new(&ctx);
 
-        let n = 1_000_000;
+        let n: u32 = 1_000_000;
+        let scanner = Scanner::new(&ctx.device, n as u64 * 4);
+
         let input: Vec<u32> = (0..n).map(|_| rand::random::<u32>() % 100).collect();
 
         let cpu_result: Vec<u32> = input
             .iter()
-            .scan(0, |state, &x| {
+            .scan(0u32, |state, &x| {
                 *state += x;
                 Some(*state)
             })
             .collect();
 
-        let buf_src = common::buffers::create_storage_buffer(&ctx.device, &input);
-        let buf_dst = common::buffers::create_empty_storage_buffer(&ctx.device, (n * 4) as u64);
+        ctx.queue
+            .write_buffer(scanner.buf_hist(), 0, bytemuck::cast_slice(&input));
 
-        scanner.scan_gpu_to_gpu(&buf_src, &buf_dst).await;
+        let mut encoder = ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        scanner.record_scan(&mut encoder);
+        ctx.queue.submit(Some(encoder.finish()));
 
-        let gpu_result =
-            common::buffers::download_buffer(&ctx.device, &ctx.queue, &buf_dst, (n * 4) as u64)
-                .await;
+        let gpu_result = common::buffers::download_buffer(
+            &ctx.device,
+            &ctx.queue,
+            scanner.buf_hist(),
+            n as u64 * 4,
+        )
+        .await;
 
         assert_eq!(cpu_result, gpu_result, "GPU Scan result matches CPU");
     }

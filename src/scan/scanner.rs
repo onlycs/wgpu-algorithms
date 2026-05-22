@@ -1,133 +1,158 @@
 use super::pipeline::ScanPipeline;
-use crate::{common, context::Context};
-use std::sync::Arc;
+use crate::common;
+
+struct ScanLevel {
+    bg: wgpu::BindGroup,
+    x_groups: u32,
+    y_groups: u32,
+}
 
 pub struct Scanner {
     pipeline: ScanPipeline,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    pub scratch_buffer: Option<wgpu::Buffer>,
-    scratch_size_bytes: u64,
+    buf_hist: wgpu::Buffer,
+    #[allow(dead_code)]
+    scratch_buffer: Option<wgpu::Buffer>,
+    levels: Vec<ScanLevel>,
+    // The level-0 aux buffer + offset. After record_scan, this contains the
+    // fully-resolved per-scan-chunk prefix sums that scatter needs to add in.
+    // None means there's only one scan-chunk (no add ever needed).
+    level0_aux: Option<(wgpu::Buffer, u64)>,
 }
 
 impl Scanner {
-    pub fn new(ctx: &Context) -> Self {
-        Self {
-            pipeline: ScanPipeline::new(ctx),
-            device: Arc::new(ctx.device.clone()),
-            queue: Arc::new(ctx.queue.clone()),
-            scratch_buffer: None,
-            scratch_size_bytes: 0,
-        }
-    }
+    pub fn new(device: &wgpu::Device, hist_bytes: u64) -> Self {
+        let pipeline = ScanPipeline::new(device);
 
-    pub async fn scan(&mut self, input: &[u32]) -> Vec<u32> {
-        let data_buffer = common::buffers::create_storage_buffer(&self.device, input);
-        let dst_buffer =
-            common::buffers::create_empty_storage_buffer(&self.device, data_buffer.size());
+        let buf_hist = common::buffers::create_empty_storage_buffer(
+            device,
+            "sort/scanner/buffer:hist",
+            hist_bytes,
+        );
 
-        self.scan_gpu_to_gpu(&data_buffer, &dst_buffer).await;
-
-        let size_bytes = (input.len() * 4) as u64;
-        common::buffers::download_buffer(&self.device, &self.queue, &dst_buffer, size_bytes).await
-    }
-
-    pub async fn scan_gpu_to_gpu(&mut self, input_buf: &wgpu::Buffer, output_buf: &wgpu::Buffer) {
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        self.record_scan(&mut encoder, input_buf, output_buf);
-        self.queue.submit(Some(encoder.finish()));
-    }
-
-    pub fn record_scan(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        input_buf: &wgpu::Buffer,
-        output_buf: &wgpu::Buffer,
-    ) {
-        let size_bytes = input_buf.size();
-        let num_items = (size_bytes / 4) as u32;
-
-        self.prepare_scratch(num_items);
-
-        encoder.copy_buffer_to_buffer(input_buf, 0, output_buf, 0, size_bytes);
-
-        let scratch = self.scratch_buffer.as_ref().unwrap();
-
-        struct Level<'a> {
-            buf: &'a wgpu::Buffer,
-            offset: u64,
-            count: u32,
-        }
-
-        let mut levels = Vec::new();
-        levels.push(Level {
-            buf: output_buf,
-            offset: 0,
-            count: num_items,
-        });
-
-        let mut current_scratch_offset = 0u64;
-
-        loop {
-            let current = levels.last().unwrap();
-            if current.count <= 1 {
-                break;
-            }
-
-            let items_per_block = self.pipeline.vt * self.pipeline.block_size;
-
-            let aux_count = (current.count + items_per_block - 1) / items_per_block;
-            let aux_size = (aux_count * 4) as u64;
-            let aux_offset = crate::common::math::align_to(current_scratch_offset, 256);
-
-            self.pipeline.dispatch(
-                &self.device,
-                encoder,
-                &self.pipeline.scan_pipeline,
-                current.buf,
-                current.offset,
-                scratch,
-                aux_offset,
-                current.count,
-            );
-
-            levels.push(Level {
-                buf: scratch,
-                offset: aux_offset,
-                count: aux_count,
-            });
-            current_scratch_offset = aux_offset + aux_size;
-        }
-
-        for i in (0..levels.len() - 1).rev() {
-            let data_level = &levels[i];
-            let aux_level = &levels[i + 1];
-
-            self.pipeline.dispatch(
-                &self.device,
-                encoder,
-                &self.pipeline.add_pipeline,
-                data_level.buf,
-                data_level.offset,
-                aux_level.buf,
-                aux_level.offset,
-                data_level.count,
-            );
-        }
-    }
-
-    fn prepare_scratch(&mut self, num_items: u32) {
-        let needed_bytes = self.pipeline.get_scratch_size(num_items);
-        if self.scratch_buffer.is_none() || needed_bytes > self.scratch_size_bytes {
-            self.scratch_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Scanner Scratch"),
+        let num_items = (hist_bytes / 4) as u32;
+        let needed_bytes = pipeline.get_scratch_size(num_items);
+        let scratch_buffer = (needed_bytes > 0).then(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("sort/scanner/buffer:scratch"),
                 size: needed_bytes,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
-            }));
-            self.scratch_size_bytes = needed_bytes;
+            })
+        });
+
+        let items_per_block = pipeline.vt * pipeline.block_size;
+        let max_dispatch = 65535u32;
+
+        // (data_is_buf_hist, byte_offset, count)
+        // Level 0's data lives in buf_hist (in-place scan, no copy needed).
+        // All later levels live inside the scratch buffer.
+        let mut temp: Vec<(bool, u64, u32)> = vec![(true, 0, num_items)];
+        let mut scratch_offset = 0u64;
+        let mut levels = Vec::new();
+        let mut level0_aux: Option<(wgpu::Buffer, u64)> = None;
+
+        loop {
+            let (data_is_buf_hist, data_off, count) = *temp.last().unwrap();
+            if count <= 1 {
+                break;
+            }
+
+            let aux_count = (count + items_per_block - 1) / items_per_block;
+            let aux_size = (aux_count * 4) as u64;
+            let aux_offset = common::math::align_to(scratch_offset, 256);
+
+            let scratch = scratch_buffer.as_ref().unwrap();
+            let data_buf: &wgpu::Buffer = if data_is_buf_hist { &buf_hist } else { scratch };
+
+            // Stash level 0's aux location for the sorter to consume.
+            if levels.is_empty() {
+                level0_aux = Some((scratch.clone(), aux_offset));
+            }
+
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: data_buf,
+                            offset: data_off,
+                            size: None,
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: scratch,
+                            offset: aux_offset,
+                            size: None,
+                        }),
+                    },
+                ],
+            });
+
+            let workgroups = common::math::calc_groups(count, items_per_block);
+            levels.push(ScanLevel {
+                bg,
+                x_groups: workgroups.min(max_dispatch),
+                y_groups: (workgroups + max_dispatch - 1) / max_dispatch,
+            });
+
+            temp.push((false, aux_offset, aux_count));
+            scratch_offset = aux_offset + aux_size;
+        }
+
+        Self {
+            pipeline,
+            buf_hist,
+            scratch_buffer,
+            levels,
+            level0_aux,
+        }
+    }
+
+    pub fn buf_hist(&self) -> &wgpu::Buffer {
+        &self.buf_hist
+    }
+
+    /// Number of items processed per scan workgroup. The sorter needs this
+    /// to compute which scan-chunk each of its histogram entries lives in,
+    /// so it can fetch the right aux value during the fused add+scatter.
+    pub fn items_per_scan_block(&self) -> u32 {
+        self.pipeline.vt * self.pipeline.block_size
+    }
+
+    /// Level-0 aux buffer + byte offset. After `record_scan` returns,
+    /// this region holds the fully-resolved per-scan-chunk prefix sums
+    /// that scatter needs to add in. Returns None if the histogram fits
+    /// in a single scan-chunk (in which case no add is ever needed).
+    pub fn level0_aux(&self) -> Option<(&wgpu::Buffer, u64)> {
+        self.level0_aux.as_ref().map(|(b, o)| (b, *o))
+    }
+
+    pub fn record_scan(&self, encoder: &mut wgpu::CommandEncoder) {
+        // Scan-down: each level reads its data in place and produces its aux.
+        // No initial copy needed — level 0's data is buf_hist itself, which
+        // the radix reduce kernel has just written.
+        for level in &self.levels {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            cpass.set_pipeline(&self.pipeline.scan_pipeline);
+            cpass.set_bind_group(0, &level.bg, &[]);
+            cpass.dispatch_workgroups(level.x_groups, level.y_groups, 1);
+        }
+
+        // Add-up: propagate higher-level prefixes downward.
+        // We stop *before* the bottom-most add — the radix scatter kernel
+        // will do that final add itself as part of its histogram lookup,
+        // saving one full read+write pass over the histogram per radix pass.
+        if self.levels.len() > 1 {
+            for level in self.levels.iter().rev().take(self.levels.len() - 1) {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                cpass.set_pipeline(&self.pipeline.add_pipeline);
+                cpass.set_bind_group(0, &level.bg, &[]);
+                cpass.dispatch_workgroups(level.x_groups, level.y_groups, 1);
+            }
         }
     }
 }
