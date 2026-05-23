@@ -204,12 +204,7 @@ impl Sorter {
         &self.buf_keys
     }
 
-    pub fn sort(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        queue: &wgpu::Queue,
-        sort_length: u32,
-    ) {
+    pub fn sort(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, sort_length: u32) {
         assert!(
             sort_length <= self.num_elements,
             "sort_length ({sort_length}) exceeds buffer capacity ({})",
@@ -265,7 +260,7 @@ impl Sorter {
     }
 
     pub async fn sort_array(
-        &mut self,
+        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         values: &[u32],
