@@ -23,15 +23,7 @@ impl SortPipeline {
             ],
         });
 
-        let limits = device.limits();
-        let max_shared_mem = limits.max_compute_workgroup_storage_size;
-
-        let (vt, block_size) = if max_shared_mem >= 32768 {
-            (8, 256) // M3 / Desktop
-        } else {
-            (4, 128) // Mobile
-        };
-
+        let (vt, block_size) = (8, 256);
         let config = common::shader::ShaderConfig { vt, block_size };
 
         common::shader::create_compute_pipeline(

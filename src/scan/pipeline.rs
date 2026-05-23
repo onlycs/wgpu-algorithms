@@ -18,18 +18,7 @@ impl ScanPipeline {
             ],
         });
 
-        let limits = device.limits();
-        let max_shared_mem = limits.max_compute_workgroup_storage_size;
-
-        // High End (M3/Desktop): 32KB+ shared mem -> Use VT=8, Block=256
-        // Low End (Mobile): <32KB shared mem -> Use VT=4, Block=128 (Lower register pressure)
-        let (vt, block_size) = if max_shared_mem >= 32768 {
-            (8, 256)
-        } else {
-            log::warn!("Low-end GPU detected. Downgrading to VT=4.");
-            (4, 128)
-        };
-
+        let (vt, block_size) = (8, 256);
         let config = common::shader::ShaderConfig { vt, block_size };
 
         let scan_pipeline = common::shader::create_compute_pipeline(

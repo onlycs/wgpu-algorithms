@@ -7,7 +7,7 @@ mod tests {
     async fn test_sort() {
         let ctx = Context::init().await.unwrap();
         let n = 1_234_567u32;
-        let mut sorter = Sorter::new(&ctx.device, n);
+        let sorter = Sorter::new(&ctx.device, n);
 
         let values: Vec<u32> = (0..n).map(|_| rand::random::<u32>()).collect();
         let keys: Vec<u32> = (0..n).collect();
