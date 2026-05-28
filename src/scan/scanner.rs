@@ -132,11 +132,15 @@ impl Scanner {
     }
 
     pub fn record_scan(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+        self.record_scan_with_pass(&mut cpass);
+    }
+
+    pub fn record_scan_with_pass(&self, cpass: &mut wgpu::ComputePass) {
         // Scan-down: each level reads its data in place and produces its aux.
         // No initial copy needed — level 0's data is buf_hist itself, which
         // the radix reduce kernel has just written.
         for level in &self.levels {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
             cpass.set_pipeline(&self.pipeline.scan_pipeline);
             cpass.set_bind_group(0, &level.bg, &[]);
             cpass.dispatch_workgroups(level.x_groups, level.y_groups, 1);
@@ -148,7 +152,6 @@ impl Scanner {
         // saving one full read+write pass over the histogram per radix pass.
         if self.levels.len() > 1 {
             for level in self.levels.iter().rev().take(self.levels.len() - 1) {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
                 cpass.set_pipeline(&self.pipeline.add_pipeline);
                 cpass.set_bind_group(0, &level.bg, &[]);
                 cpass.dispatch_workgroups(level.x_groups, level.y_groups, 1);
