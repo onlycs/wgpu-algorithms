@@ -204,7 +204,12 @@ impl Sorter {
         &self.buf_keys
     }
 
-    pub fn sort(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, sort_length: u32) {
+    pub fn sort_with_pass(
+        &self,
+        cpass: &mut wgpu::ComputePass,
+        queue: &wgpu::Queue,
+        sort_length: u32,
+    ) {
         assert!(
             sort_length <= self.num_elements,
             "sort_length ({sort_length}) exceeds buffer capacity ({})",
@@ -241,22 +246,21 @@ impl Sorter {
         for i in 0..16usize {
             let (reduce_bg, scatter_bg) = &bind_groups[i];
 
-            {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                cpass.set_pipeline(&pipeline.reduce_pipeline);
-                cpass.set_bind_group(0, reduce_bg, &[]);
-                cpass.dispatch_workgroups(x_groups, y_groups, 1);
-            }
+            cpass.set_pipeline(&pipeline.reduce_pipeline);
+            cpass.set_bind_group(0, reduce_bg, &[]);
+            cpass.dispatch_workgroups(x_groups, y_groups, 1);
 
-            scanner.record_scan(encoder);
+            scanner.record_scan(cpass);
 
-            {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-                cpass.set_pipeline(&pipeline.scatter_pipeline);
-                cpass.set_bind_group(0, scatter_bg, &[]);
-                cpass.dispatch_workgroups(x_groups, y_groups, 1);
-            }
+            cpass.set_pipeline(&pipeline.scatter_pipeline);
+            cpass.set_bind_group(0, scatter_bg, &[]);
+            cpass.dispatch_workgroups(x_groups, y_groups, 1);
         }
+    }
+
+    pub fn sort(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, sort_length: u32) {
+        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+        self.sort_with_pass(&mut cpass, queue, sort_length);
     }
 
     pub async fn sort_array(

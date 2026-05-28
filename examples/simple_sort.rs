@@ -30,7 +30,7 @@ async fn run() {
         .unwrap();
 
     println!("Initializing Context...");
-    let mut sorter = Sorter::new(&device, 12);
+    let sorter = Sorter::new(&device, 12);
 
     let input = vec![10, 5, 8, 1, 2, 9, 3, 4, 7, 6, 0, 11];
     let keys = (0..input.len() as u32).collect::<Vec<_>>();

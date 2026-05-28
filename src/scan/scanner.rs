@@ -131,12 +131,7 @@ impl Scanner {
         self.level0_aux.as_ref().map(|(b, o)| (b, *o))
     }
 
-    pub fn record_scan(&self, encoder: &mut wgpu::CommandEncoder) {
-        let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-        self.record_scan_with_pass(&mut cpass);
-    }
-
-    pub fn record_scan_with_pass(&self, cpass: &mut wgpu::ComputePass) {
+    pub fn record_scan(&self, cpass: &mut wgpu::ComputePass) {
         // Scan-down: each level reads its data in place and produces its aux.
         // No initial copy needed — level 0's data is buf_hist itself, which
         // the radix reduce kernel has just written.
